@@ -5,6 +5,8 @@ from database import SessionLocal, engine, Base
 from models import User
 from schemas import UserCreate, UserLogin
 from security import hash_password, verify_password, create_access_token
+from fastapi.staticfiles import StaticFiles
+
 
 
 app = FastAPI()
@@ -52,3 +54,19 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
 
     token = create_access_token({"sub": user.email})
     return {"access_token": token, "token_type": "bearer"}
+
+
+
+app.mount("/images", StaticFiles(directory="img"), name="images")
+
+@app.get("/mostrarimagenes_Categoria/ropa")
+def obtener_imagenes():
+    return [
+        {"nombre": "Producto 1", "precio": 10000, "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpeg"},
+        {"nombre": "Producto 1", "precio": 10000, "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpeg"},
+        {"nombre": "Producto 2", "precio": 12000, "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpeg"},
+        {"nombre": "Producto 2", "precio": 12000, "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpeg"},
+        {"nombre": "Producto 3", "precio": 9000, "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpeg"},
+        {"nombre": "Producto 3", "precio": 9000, "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpeg"},
+    ]
+
