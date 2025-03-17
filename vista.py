@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
-from models import User
+from models import User,Product
 from schemas import UserCreate, UserLogin
 from security import hash_password, verify_password, create_access_token
 from fastapi.staticfiles import StaticFiles
@@ -56,25 +56,6 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
 
 
-""""
-@app.post("/register")
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == user_data.email).first()
-    if user:
-        raise HTTPException(status_code=400, detail="El correo ya está registrado")
-
-    hashed_password = hash_password(user_data.password)
-    new_user = User(email=user_data.email, password=hashed_password)
-
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    return {"message": "Usuario registrado correctamente"}  
-"""
-
-
-
 @app.post("/login")
 async def login(user_data: UserLogin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_data.email).first()
@@ -94,73 +75,58 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
 
 app.mount("/images", StaticFiles(directory="img"), name="images")
 
-@app.get("/mostrarimagenes_Categoria/ropa")
-def obtener_imagenes():
+
+@app.get("/mostrarimagenes")
+def obtener_imagenes(limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
+    productos = db.query(Product).offset(offset).limit(limit).all()  
     return [
-        {"id":"lana","nombre": "Producto 1", "precio": 10000, "descripcion": "Descripcion de los Productos", "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpg"},
-        {"id":"lana","nombre": "Producto 1", "precio": 10000,"descripcion": "Descripcion de los Productos", "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpg"},
-        {"id":"lana","nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los Productos", "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpg"},
-        {"id":"lana","nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los Productos", "imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpg"},
-        {"id":"lana","nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los Productos","imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpg"},
-        {"id":"peluche","nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los peluche","imagen_url": "http://localhost:8000/images/ProductosRopa 2.jpg"},
+        {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+        for producto in productos
     ]
 
 
-@app.get("/mostrarProductos/lana")
-def obtener_productos():
+@app.get("/mostrarimagenes_Categoria/{category}")
+def obtener_imagenes(category: str, limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
+    productos = db.query(Product).filter(Product.category == category).offset(offset).limit(limit).all()
     return [
-        {"nombre": "Producto 1", "precio": 10000, "descripcion": "Descripcion de los lana", "imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"},
-        {"nombre": "Producto 1", "precio": 10000,"descripcion": "Descripcion de los lana", "imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"},
-        {"nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los lana", "imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"},
-        {"nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los lana", "imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"},
-        {"nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los lana","imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"},
-        {"nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los lana","imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"},
-    ]
-@app.get("/mostrarProductos/piedras")
-def obtener_productos():
-    return [
-        {"nombre": "Producto 1", "precio": 10000, "descripcion": "Descripcion de los piedras", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 1", "precio": 10000,"descripcion": "Descripcion de los piedras", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los piedras", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los piedras", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los piedras","imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los piedras","imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-    ]
-@app.get("/mostrarProductos/agujas")
-def obtener_productos():
-    return [
-        {"nombre": "Producto 1", "precio": 10000, "descripcion": "Descripcion de los agujas", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 1", "precio": 10000,"descripcion": "Descripcion de los agujas", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los agujas", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 2", "precio": 12000,"descripcion": "Descripcion de los agujas", "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los agujas","imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
-        {"nombre": "Producto 3", "precio": 9000, "descripcion": "Descripcion de los agujas","imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"},
+        {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+        for producto in productos
     ]
 
 
-@app.get("/productosNombre/{id}")
-def obtener_imagenes(id: str):
-    if id == "lana":
-            return {
-                "id": "lana",
-                "nombre": "lanas",
-                "descripcion": "descripcion de las lanas",
-                "precio": 12200,
-                "tipo_unidad": "unidades",
-                "color": "azul",
-                "category":"lana",
-                "imagen_url": "http://localhost:8000/images/Producto 1 part1.jpeg"
-                }
-    elif id == "peluche":
+
+@app.get("/buscar_producto/{id}")
+def obtener_imagenes(id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == id).first()
+    if producto:  
         return {
-                "id": "lana",
-                "nombre": "peluches",
-                "descripcion": "descripcion de las peluches",
-                "precio": 90200,
-                "tipo_unidad": "unidades",
-                "color": "azul",
-                "category":"lana",
-                "imagen_url": "http://localhost:8000/images/Producto 2 part1.jpeg"
-                }
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
     else:
         return {"error": "Producto no encontrado"}, 404
+
