@@ -3,10 +3,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
 from models import User,Product, Cart, DetailsCart, OrderDetail 
-from schemas import UserCreate, UserLogin, CarritoAgregar, CarritoResponseModel, Usuario, UpdateRequest, UpdatePassword
+from schemas import UserCreate, UserLogin, CarritoAgregar, CarritoResponseModel, Usuario, UpdateRequest, UpdatePassword, ForgotPasswordRequest, ResetPasswordRequest
 from security import hash_password, verify_password, create_access_token,verify_token
 from fastapi.staticfiles import StaticFiles
 import os
+import json
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from email.mime.text import MIMEText 
+import base64 
+from googleapiclient.discovery import build 
+from datetime import timedelta
+from fastapi.responses import RedirectResponse
+
+
+
 
 
 
@@ -29,6 +40,145 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+
+
+
+CLIENT_SECRETS_FILE = "credentials.json"
+SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/gmail.send" 
+]
+REDIRECT_URI = "http://localhost:8000/auth/callback"
+
+#Iniciar Flujo
+
+with open(CLIENT_SECRETS_FILE, "r") as f:
+    client_secrets = json.load(f)
+
+# Crear el flujo de OAuth
+# El flow nos permite crear url de autorizacion y cambiar tokens
+flow = Flow.from_client_config( 
+    client_secrets,
+    scopes=SCOPES,
+    redirect_uri=REDIRECT_URI
+)
+
+
+def send_email(tu_email: str, subject: str, body: str):
+    try:
+        # Cargar las credenciales desde el archivo
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+
+        # Crear el mensaje
+        message = MIMEText(body, "html")
+        message["to"] = tu_email
+        message["subject"] = subject
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+        # Enviar el correo usando la API de Gmail
+        service = build("gmail", "v1", credentials=creds)
+        service.users().messages().send(
+            userId="me",
+            body={"raw": raw_message}
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"Error al enviar el correo: {e}")
+        return False
+
+
+
+@app.post("/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == request.email).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    reset_token = create_access_token(data={"sub": db_user.email}, expires_delta=timedelta(minutes=15))
+    reset_link = f"http://localhost:8080/reset-password?token={reset_token}"
+
+    email_body = f"""
+        <h1>Recuperación de contraseña</h1>
+        <p>Haz clic en el siguiente enlace para restablecer tu contraseña:</p>
+        <a href="{reset_link}">Restablecer contraseña</a>
+        <p>Este enlace expirará en 15 minutos.</p>
+    """
+
+    if send_email(db_user.email, "Recuperación de contraseña", email_body):
+        return {"message": "Se ha enviado un correo con instrucciones para restablecer tu contraseña."}
+    else:
+        raise HTTPException(status_code=500, detail="Error al enviar el correo")
+
+@app.post("/reset-password")
+async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+
+    payload = verify_token(request.token)  
+    if not payload:
+        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+
+    db_user = db.query(User).filter(User.email == payload["sub"]).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    db_user.password = hash_password(request.new_password)  
+    db.commit()
+
+    return {"message": "Contraseña actualizada correctamente"}
+
+
+@app.get("/auth/callback")
+async def callback(code: str, db: Session = Depends(get_db)):
+    try:
+        print("Código de autorización recibido:", code)
+
+        # Intercambiar el código por un token de acceso
+        flow.fetch_token(code=code)
+
+        # Obtener credenciales
+        credentials = flow.credentials
+
+        # Guardar las credenciales en un archivo token.json
+        with open("token.json", "w") as token_file:
+            token_file.write(credentials.to_json())  # Guardar credenciales como JSON
+
+        # Obtener información del usuario desde Google
+        user_info_service = build("oauth2", "v2", credentials=credentials)
+        user_info = user_info_service.userinfo().get().execute()
+        
+        email = user_info["email"]
+        nombre = user_info.get("name", "Usuario")
+        print(email,nombre)
+
+        # Verificar si el usuario ya está en la base de datos
+        db_user = db.query(User).filter(User.email == email).first()
+
+        if not db_user:
+            # Si el usuario no existe, crearlo con rol de "cliente"
+            new_user = User(email=email, nombre=nombre, rol="cliente")
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            print("Usuario registrado como cliente")
+
+        # Generar el token JWT
+        access_token = create_access_token(data={"sub": email, "rol": "cliente"})
+        
+        # Redirigir al frontend con el token
+        return RedirectResponse(url=f"http://localhost:5173/Perfil?token={access_token}")
+
+    except Exception as e:
+        print(f"Error en el callback: {e}")
+        raise HTTPException(status_code=400, detail=f"Error en la autenticación: {e}")
+
+
+@app.get("/auth/login")
+async def login():
+    authorization_url, state = flow.authorization_url(prompt="consent")
+    return RedirectResponse(authorization_url)
 
 
     
@@ -102,6 +252,10 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
     db.refresh(db_user)
 
     return {"message": f"{campo.capitalize()} actualizado exitosamente", "user": db_user}
+
+
+
+
 
 
 @app.put("/password/")

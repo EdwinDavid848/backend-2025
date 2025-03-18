@@ -56,3 +56,11 @@ class CarritoAgregar(BaseModel):
         return v
 
 
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
