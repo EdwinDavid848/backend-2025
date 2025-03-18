@@ -1,6 +1,8 @@
-from sqlalchemy import Column, Integer, String, Text, Enum, Float
+from sqlalchemy import Column, Integer, String, Text, Enum, Float, TIMESTAMP, ForeignKey
 from database import Base
 import enum
+from datetime import datetime
+from sqlalchemy.orm import relationship
 
 
 class UserRole(enum.Enum):
@@ -14,6 +16,11 @@ class category(enum.Enum):
     agujas="agujas"
     peluche="peluche"
     ropa="ropa"
+
+class OrderStatus(enum.Enum):
+    reserved = "reserved"
+    paid = "paid"
+    cancelled = "cancelled"
 
 class User(Base):
     __tablename__ = 'users'
@@ -35,3 +42,44 @@ class Product(Base):
     color = Column(String(250), nullable=False)
     category = Column(Enum(category))
     imagen_url = Column(String(300))
+
+class Order(Base):
+    __tablename__ = 'orders'
+    id = Column(Integer, primary_key=True, index=True)
+    cliente_id = Column(Integer, ForeignKey('users.id'))
+    fecha_pedido = Column(TIMESTAMP, default=datetime.utcnow)
+    estado = Column(Enum(OrderStatus))
+    cliente = relationship('User')
+
+
+class OrderDetail(Base):
+    __tablename__ = 'order_details'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pedido_id = Column(Integer, ForeignKey('orders.id'))
+    producto_id = Column(Integer, ForeignKey('products.id'))
+    cantidad = Column(Integer, nullable=False)
+    precio_unitario = Column(Float, nullable=False)
+    
+    Orders=relationship('Order')
+    Products=relationship('Product')
+
+
+
+class Cart(Base):
+    __tablename__ = 'carts'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cliente_id = Column(Integer, ForeignKey('users.id'))
+    fecha_creacion = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    cliente = relationship('User')
+    detalles = relationship('DetailsCart', back_populates="cart")
+
+class DetailsCart(Base):
+    __tablename__ = 'details_cart'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    carrito_id = Column(Integer, ForeignKey('carts.id'))
+    producto_id = Column(Integer, ForeignKey('products.id'))
+    cantidad = Column(Integer, nullable=False)
+
+    cart = relationship('Cart', back_populates="detalles")
+    product = relationship('Product') 
