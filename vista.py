@@ -798,7 +798,7 @@ async def edit_class(
 # Cambiar estado de habilitar/deshabilitar clase
 @app.put("/editHability/{title}/{hability}")
 async def edit_hability(title: str, hability: bool, db: Session = Depends(get_db)):
-    existing_class = db.query(Class).filter(Class.titulo == title).first()
+    existing_class = db.query(Class).filter(Class.id == title).first()
 
     if not existing_class:
         raise HTTPException(status_code=404, detail="Clase no encontrada")
@@ -850,40 +850,46 @@ async def mostrar(db: Session = Depends(get_db)):
         reservas.append({
             "id": reserva.id,
             "clase": clase.titulo if clase else None,  # Asegurarse de que clase exista
-            "user": user.email if user else None,    # Asegurarse de que user exista
-            "fecha_class": reserva.fecha_class,
+            "usuario": user.email if user else None,    # Asegurarse de que user exista
+            "fecha": reserva.fecha_class,
+            "monto": clase.precio,
             "estado": reserva.estado
         })
     
     return reservas
 
 #Buscador de Reservacion
-@app.get("/SearchClass/{email}", response_model=list[ReservationClass])
-async def buscarReservacion(email: str, db: Session = Depends(get_db)):
-    status=str
-    user=db.query(User).filter(User.email == email).first()
-    if not encontrar:
-        raise HTTPException(status_code=400, detail='No hay usuario')
+@app.get("/SearchClass/{email}/{state}")
+async def buscarReservacion(email: str, state:OrderStatus, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == email).first()
+    if not existing_user:
+        raise HTTPException(status_code=400, detail="El usuario no existe")
+
+    # Join entre reservaciones y clases para traer la información completa
+    reservas = db.query(ClassReservation, Class).join(Class, Class.id == ClassReservation.id_clase)\
+        .filter(ClassReservation.id_user == existing_user.id).all()
+
+    if not reservas:
+        raise HTTPException(status_code=400, detail="El usuario no tiene reservaciones")
     
-    encontrar = db.query(ClassReservation).filter(ClassReservation.id_user == user.id).all()
+    estado=db.query(ClassReservation).filter(ClassReservation.estado==state).all()
     
-    if not encontrar:
-        raise HTTPException(status_code=400, detail='No hay reservaciones')
+    if not estado:
+        raise HTTPException(status_code=400, detail="El estado es incorrecto o el usuario no tiene reservaciones con ese estado")
 
-    ids_reservas = [reserva.id for reserva in encontrar]
+    reservas_detalladas = [
+        {
+            "id": reserva.id,
+            "clase": clase.titulo,
+            "usuario":existing_user.nombre,
+            "fecha": reserva.fecha_class,
+            "monto": clase.precio,
+            "estado": reserva.estado
+        }
+        for reserva, clase in reservas
+    ]
+    return reservas_detalladas
 
-    pagado = db.query(Payment).filter(Payment.reservation_id.in_(ids_reservas)).all()
-
-    if not pagado:
-        status='la reservacion no esta pagada'
-        
-    clases = db.query(Class).filter(Class.id.in_([reserva.id_class for reserva in encontrar])).all()
-
-    if not clases:
-        status='la reservacion no esta pagada'
-
-    
-    return status
 
 #Reservaciones de usuario
 @app.get('/reservaciones/{user}')
@@ -891,26 +897,25 @@ async def mostrar_reservas(user: str, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.email == user).first()
     if not existing_user:
         raise HTTPException(status_code=400, detail="El usuario no existe")
-    
-    # Obtener todas las reservaciones pendientes del usuario
-    reservas = db.query(ClassReservation).filter(
-        ClassReservation.id_user == existing_user.id,
-        ClassReservation.estado != "paid"  # Filtrar solo las reservas no pagadas
-    ).all()
-    
+
+    # Join entre reservaciones y clases para traer la información completa
+    reservas = db.query(ClassReservation, Class).join(Class, Class.id == ClassReservation.id_clase)\
+        .filter(ClassReservation.id_user == existing_user.id).all()
+
     if not reservas:
-        raise HTTPException(status_code=400, detail="El usuario no tiene reservaciones pendientes")
-    
-    # Crear lista de reservaciones detalladas
+        raise HTTPException(status_code=400, detail="El usuario no tiene reservaciones")
+
     reservas_detalladas = [
         {
             "id": reserva.id,
-            "clase": db.query(Class).filter(Class.id == reserva.id_clase).first().titulo,
+            "clase": clase.titulo,
+            "usuario":existing_user.nombre,
             "fecha": reserva.fecha_class,
-            "monto": db.query(Class).filter(Class.id == reserva.id_clase).first().precio
+            "monto": clase.precio,
+            "estado": reserva.estado
         }
-        for reserva in reservas if db.query(Class).filter(Class.id == reserva.id_clase).first() is not None
-    ]   
+        for reserva, clase in reservas
+    ]
     return reservas_detalladas
 
 
@@ -924,6 +929,16 @@ async def reservar_class(reservation: ReservationClass, db: Session = Depends(ge
     existing_user=db.query(User).filter(User.email == reservation.email_user).first()
     if not existing_user:
         raise HTTPException(status_code=400,detail="el usuario no existe")
+    
+    existing = db.query(ClassReservation).filter(
+        ClassReservation.id_user == existing_user.id,
+        ClassReservation.id_clase == existing_class.id,
+        ClassReservation.fecha_class == reservation.date_class
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Ya existe una reservación para esta clase en esta fecha")
+
     
     new_reservation = ClassReservation(
         id_clase=existing_class.id,
