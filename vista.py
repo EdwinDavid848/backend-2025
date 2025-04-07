@@ -36,7 +36,7 @@ def get_db():
 app.mount("/images", StaticFiles(directory="img"), name="images")
     
 @app.post("/register")
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+async def register(user_data: Usuario, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_data.email).first()
     if user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
@@ -62,7 +62,7 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/login")
-async def login(user_data: UserLogin, db: Session = Depends(get_db)):
+async def login(user_data: Login, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_data.email).first()
     if user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
@@ -91,7 +91,7 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
 
-    if campo not in ['nombre','email', 'telefono', ]:
+    if campo not in ['nombre','email', 'telefono', 'rol']:
         raise HTTPException(status_code=400, detail="Campo no válido")
 
     if campo == 'email':
@@ -100,7 +100,9 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
         db_user.telefono = data.value
     elif campo == 'nombre':
         db_user.nombre = data.value
-
+    elif campo == 'rol':
+        db_user.rol = data.value
+        
     db.commit()
     db.refresh(db_user)
 
