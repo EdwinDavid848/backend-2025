@@ -55,7 +55,7 @@ class Product(Base):
     color = Column(String(250), nullable=False)
     category = Column(Enum(category))
     imagen_url = Column(String(300))
-
+    activo = Column(Boolean, default=True)
 
 
 # Tabla Users

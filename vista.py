@@ -34,9 +34,147 @@ def get_db():
 
 
 app.mount("/images", StaticFiles(directory="img"), name="images")
+
+
+CLIENT_SECRETS_FILE = "credentials.json"
+SCOPES = [
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/gmail.send" 
+]
+REDIRECT_URI = "http://localhost:8000/auth/callback"
+
+#Iniciar Flujo
+
+with open(CLIENT_SECRETS_FILE, "r") as f:
+    client_secrets = json.load(f)
+
+# Crear el flujo de OAuth
+# El flow nos permite crear url de autorizacion y cambiar tokens
+flow = Flow.from_client_config( 
+    client_secrets,
+    scopes=SCOPES,
+    redirect_uri=REDIRECT_URI
+)
+
+
+def send_email(tu_email: str, subject: str, body: str):
+    try:
+        # Cargar las credenciales desde el archivo
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+
+        # Crear el mensaje
+        message = MIMEText(body, "html")
+        message["to"] = tu_email
+        message["subject"] = subject
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
+
+        # Enviar el correo usando la API de Gmail
+        service = build("gmail", "v1", credentials=creds)
+        service.users().messages().send(
+            userId="me",
+            body={"raw": raw_message}
+        ).execute()
+        return True
+    except Exception as e:
+        print(f"Error al enviar el correo: {e}")
+        return False
+
+
+
+@app.post("/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == request.email).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    reset_token = create_access_token(data={"sub": db_user.email}, expires_delta=timedelta(minutes=15))
+    reset_link = f"http://localhost:8080/reset-password?token={reset_token}"
+
+    email_body = f"""
+        <h1>Recuperación de contraseña</h1>
+        <p>Haz clic en el siguiente enlace para restablecer tu contraseña:</p>
+        <a href="{reset_link}">Restablecer contraseña</a>
+        <p>Este enlace expirará en 15 minutos.</p>
+    """
+
+    if send_email(db_user.email, "Recuperación de contraseña", email_body):
+        return {"message": "Se ha enviado un correo con instrucciones para restablecer tu contraseña."}
+    else:
+        raise HTTPException(status_code=500, detail="Error al enviar el correo")
+
+@app.post("/reset-password")
+async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+
+    payload = verify_token(request.token)  
+    if not payload:
+        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+
+    db_user = db.query(User).filter(User.email == payload["sub"]).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    db_user.password = hash_password(request.new_password)  
+    db.commit()
+
+    return {"message": "Contraseña actualizada correctamente"}
+
+
+@app.get("/auth/callback")
+async def callback(code: str, db: Session = Depends(get_db)):
+    try:
+        print("Código de autorización recibido:", code)
+
+        # Intercambiar el código por un token de acceso
+        flow.fetch_token(code=code)
+
+        # Obtener credenciales
+        credentials = flow.credentials
+
+        # Guardar las credenciales en un archivo token.json
+        with open("token.json", "w") as token_file:
+            token_file.write(credentials.to_json())  # Guardar credenciales como JSON
+
+        # Obtener información del usuario desde Google
+        user_info_service = build("oauth2", "v2", credentials=credentials)
+        user_info = user_info_service.userinfo().get().execute()
+        
+        email = user_info["email"]
+        nombre = user_info.get("name", "Usuario")
+        print(email,nombre)
+
+        # Verificar si el usuario ya está en la base de datos
+        db_user = db.query(User).filter(User.email == email).first()
+
+        if not db_user:
+            # Si el usuario no existe, crearlo con rol de "cliente"
+            new_user = User(email=email, nombre=nombre, rol="cliente")
+            db.add(new_user)
+            db.commit()
+            db.refresh(new_user)
+            print("Usuario registrado como cliente")
+
+        # Generar el token JWT
+        access_token = create_access_token(data={"sub": email, "rol": "cliente"})
+        
+        # Redirigir al frontend con el token
+        return RedirectResponse(url=f"http://localhost:5173/Perfil?token={access_token}")
+
+    except Exception as e:
+        print(f"Error en el callback: {e}")
+        raise HTTPException(status_code=400, detail=f"Error en la autenticación: {e}")
+
+
+@app.get("/auth/login")
+async def login():
+    authorization_url, state = flow.authorization_url(prompt="consent")
+    return RedirectResponse(authorization_url)
+
+
     
 @app.post("/register")
-async def register(user_data: Usuario, db: Session = Depends(get_db)):
+async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_data.email).first()
     if user:
         raise HTTPException(status_code=400, detail="El correo ya está registrado")
@@ -62,15 +200,15 @@ async def register(user_data: Usuario, db: Session = Depends(get_db)):
 
 
 @app.post("/login")
-async def login(user_data: Login, db: Session = Depends(get_db)):
+async def login(user_data: UserLogin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_data.email).first()
     if user is None:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     if not verify_password(user_data.password, user.password):
         raise HTTPException(status_code=400, detail="Contraseña Incorrecta")
 
-    token = create_access_token({"sub": user.email, "rol": user.rol.name})
-    return {"access_token": token, "token_type": "bearer", "rol": user.rol.name}
+    token = create_access_token({"sub": user.email, "email": user.email, "rol": user.rol.name})
+    return {"access_token": token, "token_type": "bearer", "email": user.email, "rol": user.rol.name}
 
 
 
@@ -91,7 +229,7 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
     if not db_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
 
-    if campo not in ['nombre','email', 'telefono', 'rol']:
+    if campo not in ['nombre','email', 'telefono', ]:
         raise HTTPException(status_code=400, detail="Campo no válido")
 
     if campo == 'email':
@@ -100,27 +238,16 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
         db_user.telefono = data.value
     elif campo == 'nombre':
         db_user.nombre = data.value
-    elif campo == 'rol':
-        db_user.rol = data.value
-        
+
     db.commit()
     db.refresh(db_user)
 
     return {"message": f"{campo.capitalize()} actualizado exitosamente", "user": db_user}
 
-@app.get("/TodoUsuario")
-async def AllUser(db:Session=Depends(get_db)):
-    alluser=db.query(User).all() 
-    return [
-        {
-            "id": user.id,
-            "nombre": user.nombre,
-            "email": user.email,
-            "telefono": user.telefono,
-            "rol": user.rol
-        }
-        for user in alluser
-    ]
+
+
+
+
 
 @app.put("/password/")
 async def update_password(data: UpdatePassword, db: Session = Depends(get_db)):
@@ -140,29 +267,234 @@ async def update_password(data: UpdatePassword, db: Session = Depends(get_db)):
 
 
 
-#PRODUCTOS
-#---------------------------------------------------------------------------------------
-@app.post("/productos/", response_model=ProductCreate)
-async def crear_producto(product: ProductCreate, db: Session = Depends(get_db)):
-    db_product = db.query(Product).filter(Product.nombre == product.nombre).first()
-    if db_product:
-        raise HTTPException(status_code=404, detail="El nombre del producto ya se encontro")
-    db_category = db.query(Product).filter(Product.category == product.category).first()
-    if not db_category:
-        raise HTTPException(status_code=404, detail="La categoria no se encontro")
-    nuevo_producto = Product(
-        nombre=product.nombre,
-        descripcion=product.descripcion,
-        precio=product.precio,
-        tipo_unidad=product.tipo_unidad,
-        color = product.color,
-        category=product.category
-    )
-    db.add(nuevo_producto)
-    db.commit()
-    db.refresh(nuevo_producto)
+@app.get("/mostrarimagenes")
+def obtener_imagenes(limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
+    productos = db.query(Product).filter(Product.activo == True).offset(offset).limit(limit).all()  
+    return [
+        {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+        for producto in productos
+    ]
 
-    return nuevo_producto
+
+@app.get("/mostrarimagenes_Categoria/{category}")
+def obtener_imagenes(category: str, limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
+    productos = db.query(Product).filter(Product.category == category and Product.activo == True).offset(offset).limit(limit).all()
+    return [
+        {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+        for producto in productos
+    ]
+
+
+
+@app.get("/buscar_producto/{id}")
+def obtener_imagenes(id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == id and Product.activo == True).first()
+    if producto:  
+        return {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+    else:
+        return {"error": "Producto no encontrado"}, 404
+
+
+
+
+@app.get("/ver_carrito/{email}", response_model=list[CarritoResponseModel])
+def ver_carrito(email: str, session: Session = Depends(get_db)):
+    cliente = session.query(User).filter(User.email == email).first()
+    
+    if not cliente:
+        raise HTTPException(status_code=404, detail="El cliente no existe")
+    
+    carrito = session.query(DetailsCart).join(Cart).filter(Cart.cliente_id == cliente.id).all()
+
+    if not carrito:
+        raise HTTPException(status_code=404, detail="El carrito está vacío")
+
+    carrito_respuesta = []
+    for item in carrito:
+        producto = session.query(Product).filter_by(id=item.producto_id).first()
+        if producto:
+            carrito_respuesta.append({
+                "product_id": item.producto_id,
+                "product_name": producto.nombre,
+                "cantidad": item.cantidad,
+                "precio": producto.precio,
+                "total": producto.precio * item.cantidad,
+                "imagen_url": f"http://localhost:8000{producto.imagen_url}"  # Añadir URL completa para la imagen
+            })
+    
+    return carrito_respuesta
+
+@app.post("/agregar_al_carrito/{email_cliente}")
+def agregar_al_carrito(carrito_data: CarritoAgregar, email_cliente: str, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == email_cliente).first()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
+
+    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
+    if carrito is None:
+        carrito = Cart(cliente_id=db_user.id)
+        db.add(carrito)
+        db.commit()
+        db.refresh(carrito) 
+
+    detalle_existente = db.query(DetailsCart).filter_by(carrito_id=carrito.id, producto_id=carrito_data.producto_id).first()
+
+    if detalle_existente:
+        detalle_existente.cantidad += carrito_data.cantidad
+        message = f'Cantidad actualizada del producto {carrito_data.producto_id} en el carrito para el cliente {db_user.id}'
+    else:
+        nuevo_detalle = DetailsCart(
+            carrito_id=carrito.id,
+            producto_id=carrito_data.producto_id,
+            cantidad=carrito_data.cantidad
+        )
+        db.add(nuevo_detalle)
+        message = f'Producto {carrito_data.producto_id} agregado al carrito para el cliente {db_user.id}'
+
+    db.commit()
+
+    return {"message": message}
+
+@app.put("/actualizar_producto_carrito/{email_cliente}")
+def actualizar_producto_carrito(email_cliente: str,producto_data: CarritoAgregar, db: Session = Depends(get_db)
+):
+    db_user = db.query(User).filter(User.email == email_cliente).first()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
+
+    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
+    if carrito is None:
+        raise HTTPException(status_code=404, detail="Carrito no encontrado para el usuario")
+
+    detalle_existente = db.query(DetailsCart).filter_by(
+        carrito_id=carrito.id,
+        producto_id=producto_data.producto_id
+    ).first()
+
+    if detalle_existente is None:
+        raise HTTPException(status_code=404, detail="Producto no encontrado en el carrito")
+
+    detalle_existente.cantidad = producto_data.cantidad
+    db.commit()
+
+    return {
+        "message": f"Cantidad del producto {producto_data.producto_id} actualizada a {producto_data.cantidad}"
+    }
+
+
+
+@app.delete("/eliminar_del_carrito/{email_cliente}/{producto_id}")
+def eliminar_del_carrito(email_cliente: str, producto_id: int, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == email_cliente).first()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
+
+    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
+    if carrito is None:
+        raise HTTPException(status_code=404, detail="Carrito no encontrado para el usuario")
+
+    detalle_existente = db.query(DetailsCart).filter_by(carrito_id=carrito.id, producto_id=producto_id).first()
+    if detalle_existente is None:
+        raise HTTPException(status_code=404, detail="Producto no encontrado en el carrito")
+
+    db.delete(detalle_existente)
+    db.commit()
+
+    detalles_restantes = db.query(DetailsCart).filter_by(carrito_id=carrito.id).count()
+    if detalles_restantes == 0:
+        db.delete(carrito)
+        db.commit()
+        return {"message": f"Producto {producto_id} eliminado y carrito vacío eliminado para el cliente {db_user.id}"}
+
+    return {"message": f"Producto {producto_id} eliminado del carrito para el cliente {db_user.id}"}
+
+
+
+
+
+@app.get("/informacionTabla")
+def obtener_imagenes(db: Session = Depends(get_db)):
+    productos = db.query(Product).all()
+    return [
+        {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "activo" : producto.activo,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+        for producto in productos
+    ]
+
+
+@app.get("/informacionTabla/{category}")
+def obtener_imagenes(category: str, db: Session = Depends(get_db)):
+    productos = db.query(Product).filter(Product.category == category).all()
+    return [
+        {
+            "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+        }
+        for producto in productos
+    ]
+
+@app.get("/informacionTablaNombre/{nombre}")
+def obtener_imagenes(nombre: str, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.nombre.ilike(nombre) ).first()
+    
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    
+    return {
+        "id": producto.id,
+        "nombre": producto.nombre,
+        "descripcion": producto.descripcion,
+        "precio": producto.precio,
+        "tipo_unidad": producto.tipo_unidad,
+        "color": producto.color,
+        "category": producto.category,
+        "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+    }
+
+
+
 
 
 @app.post("/insertardos")
@@ -220,78 +552,6 @@ async def registrar_cliente(
         "category": producto_data.category,
         "imagen_url": producto_data.imagen_url
     }}
-
-
-@app.get("/informacionTabla")
-def obtener_imagenes(db: Session = Depends(get_db)):
-    productos = db.query(Product).all()  
-    return [
-        {
-            "id": producto.id,
-            "nombre": producto.nombre,
-            "descripcion": producto.descripcion,
-            "precio": producto.precio,
-            "tipo_unidad": producto.tipo_unidad,
-            "color": producto.color,
-            "category": producto.category,
-            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
-        }
-        for producto in productos
-    ]
-
-@app.get("/informacionTabla/{category}")
-def obtener_imagenes(category: str, db: Session = Depends(get_db)):
-    productos = db.query(Product).filter(Product.category == category).all()
-    return [
-        {
-            "id": producto.id,
-            "nombre": producto.nombre,
-            "descripcion": producto.descripcion,
-            "precio": producto.precio,
-            "tipo_unidad": producto.tipo_unidad,
-            "color": producto.color,
-            "category": producto.category,
-            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
-        }
-        for producto in productos
-    ]
-
-
-
-@app.get("/mostrarimagenes")
-def obtener_imagenes(limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
-    productos = db.query(Product).offset(offset).limit(limit).all()  
-    return [
-        {
-            "id": producto.id,
-            "nombre": producto.nombre,
-            "descripcion": producto.descripcion,
-            "precio": producto.precio,
-            "tipo_unidad": producto.tipo_unidad,
-            "color": producto.color,
-            "category": producto.category,
-            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
-        }
-        for producto in productos
-    ]
-
-@app.get("/mostrarimagenes_Categoria/{category}")
-def obtener_imagenes(category: str, limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
-    productos = db.query(Product).filter(Product.category == category).offset(offset).limit(limit).all()
-    return [
-        {
-            "id": producto.id,
-            "nombre": producto.nombre,
-            "descripcion": producto.descripcion,
-            "precio": producto.precio,
-            "tipo_unidad": producto.tipo_unidad,
-            "color": producto.color,
-            "category": producto.category,
-            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
-        }
-        for producto in productos
-    ]
-
 
 @app.put("/productosActualizar/{product_id}")
 async def actualizar_cliente(
@@ -358,7 +618,6 @@ async def actualizar_cliente(
     }}
 
 
-
 @app.delete("/productosEliminar/{product_id}")
 async def eliminar_producto(product_id: int, db: Session = Depends(get_db)):
     producto_data = db.query(Product).filter(Product.id == product_id).first()
@@ -368,174 +627,70 @@ async def eliminar_producto(product_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "Producto eliminado exitosamente", "product_id": product_id}
+
+
 @app.delete("/productos/{producto_id}", response_model=dict)
 async def eliminar_producto(producto_id: int, db: Session = Depends(get_db)):
-    order_details = db.query(OrderDetail).filter(OrderDetail.producto_id == producto_id).all()
-    for order_detail in order_details:
-        db.delete(order_detail)  
-
     producto = db.query(Product).filter(Product.id == producto_id).first()
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
-    
-    db.delete(producto)  
+
+    producto.activo = False
     db.commit()
-    
-    return {"detail": "Producto eliminado exitosamente"}
+    db.refresh(producto)
+
+    return {"detail": "Producto desactivado correctamente"}
+
+@app.put("/productos/desactivar/{producto_id}", response_model=dict)
+def desactivar_producto(producto_id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == producto_id).first()
+
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    producto.activo = False
+    db.commit()
+    db.refresh(producto)
+
+    return {"detail": "Producto desactivado correctamente"}
 
 
+@app.put("/estado_producto/{accion}/{producto_id}", response_model=dict)
+def estado_producto(accion: str, producto_id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == producto_id).first()
 
-@app.get("/productosNombre/{id}")
-def obtener_imagenes(id: int, db: Session = Depends(get_db)):
-    producto = db.query(Product).filter(Product.id == id).first()
-    if producto:  # Verifica que se encontró un producto
-        return {
-            "id": producto.id,
-            "nombre": producto.nombre,
-            "descripcion": producto.descripcion,
-            "precio": producto.precio,
-            "tipo_unidad": producto.tipo_unidad,
-            "color": producto.color,
-            "category": producto.category,
-            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
-        }
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    if accion == "activar":
+        producto.activo = True
+    elif accion == "desactivar":
+        producto.activo = False
     else:
-        return {"error": "Producto no encontrado"}, 404
-
-
-
-
-@app.post("/agregar_al_carrito/{email_cliente}")
-def agregar_al_carrito(carrito_data: carritoAgregar, email_cliente: str, db: Session = Depends(get_db)):
-    # Buscar el usuario por email
-    db_user = db.query(User).filter(User.email == email_cliente).first()
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
-
-    # Buscar o crear el carrito del usuario
-    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
-    if carrito is None:
-        carrito = Cart(cliente_id=db_user.id)
-        db.add(carrito)
-        db.commit()
-        db.refresh(carrito)  # Refrescar para obtener el ID del carrito recién creado
-
-    # Buscar el detalle del carrito para el producto
-    detalle_existente = db.query(DetailsCart).filter_by(carrito_id=carrito.id, producto_id=carrito_data.producto_id).first()
-
-    if detalle_existente:
-        detalle_existente.cantidad += carrito_data.cantidad
-        message = f'Cantidad actualizada del producto {carrito_data.producto_id} en el carrito para el cliente {db_user.id}'
-    else:
-        nuevo_detalle = DetailsCart(
-            carrito_id=carrito.id,
-            producto_id=carrito_data.producto_id,
-            cantidad=carrito_data.cantidad
-        )
-        db.add(nuevo_detalle)
-        message = f'Producto {carrito_data.producto_id} agregado al carrito para el cliente {db_user.id}'
+        raise HTTPException(status_code=400, detail="Acción inválida. Usa 'activar' o 'desactivar'.")
 
     db.commit()
+    db.refresh(producto)
 
-    return {"message": message}
+    return {"detail": f"Producto {accion} correctamente"}
 
 
+@app.delete("/productos/{producto_id}", response_model=dict)
+async def eliminar_producto(producto_id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == producto_id).first()
+    
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
 
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
 
-@app.delete("/eliminar_del_carrito/{email_cliente}/{producto_id}")
-def eliminar_del_carrito(email_cliente: str, producto_id: int, db: Session = Depends(get_db)):
-    # Buscar el usuario por email
-    db_user = db.query(User).filter(User.email == email_cliente).first()
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
-
-    # Buscar el carrito del usuario
-    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
-    if carrito is None:
-        raise HTTPException(status_code=404, detail="Carrito no encontrado para el usuario")
-
-    # Buscar el detalle del carrito para el producto
-    detalle_existente = db.query(DetailsCart).filter_by(carrito_id=carrito.id, producto_id=producto_id).first()
-    if detalle_existente is None:
-        raise HTTPException(status_code=404, detail="Producto no encontrado en el carrito")
-
-    # Eliminar el producto del carrito
-    db.delete(detalle_existente)
+    producto.activo = False
     db.commit()
+    db.refresh(producto)
 
-    # Verificar si el carrito está vacío después de eliminar el producto
-    detalles_restantes = db.query(DetailsCart).filter_by(carrito_id=carrito.id).count()
-    if detalles_restantes == 0:
-        # Si el carrito está vacío, eliminar el carrito
-        db.delete(carrito)
-        db.commit()
-        return {"message": f"Producto {producto_id} eliminado y carrito vacío eliminado para el cliente {db_user.id}"}
+    return {"detail": "Producto desactivado correctamente"}
 
-    return {"message": f"Producto {producto_id} eliminado del carrito para el cliente {db_user.id}"}
-
-
-
-
-@app.put("/actualizar_producto_carrito/{email_cliente}")
-def actualizar_producto_carrito(email_cliente: str,producto_data: carritoAgregar, db: Session = Depends(get_db)
-):
-    # Buscar el usuario por email
-    db_user = db.query(User).filter(User.email == email_cliente).first()
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
-
-    # Buscar el carrito del usuario
-    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
-    if carrito is None:
-        raise HTTPException(status_code=404, detail="Carrito no encontrado para el usuario")
-
-    # Buscar el detalle del carrito para el producto
-    detalle_existente = db.query(DetailsCart).filter_by(
-        carrito_id=carrito.id,
-        producto_id=producto_data.producto_id
-    ).first()
-
-    if detalle_existente is None:
-        raise HTTPException(status_code=404, detail="Producto no encontrado en el carrito")
-
-    # Actualizar la cantidad del producto en el carrito
-    detalle_existente.cantidad = producto_data.cantidad
-    db.commit()
-
-    return {
-        "message": f"Cantidad del producto {producto_data.producto_id} actualizada a {producto_data.cantidad}"
-    }
-
-
-@app.get("/ver_carrito/{client_id}", response_model=list[CarritoResponseModel])
-def ver_carrito(client_id: str, session: Session = Depends(get_db)):
-    # Verificar si el cliente existe en la tabla Register
-    cliente = session.query(User).filter(User.email == client_id).first()
-    
-    if not cliente:
-        raise HTTPException(status_code=404, detail="El cliente no existe")
-    
-    # Obtener el carrito del cliente
-    carrito = session.query(DetailsCart).join(Cart).filter(Cart.cliente_id == cliente.id).all()
-
-    if not carrito:
-        raise HTTPException(status_code=404, detail="El carrito está vacío")
-
-    # Preparar la respuesta con los detalles del carrito
-    carrito_respuesta = []
-    for item in carrito:
-        producto = session.query(Product).filter_by(id=item.producto_id).first()
-        if producto:
-            carrito_respuesta.append({
-                "product_id": item.producto_id,
-                "product_name": producto.nombre,
-                "cantidad": item.cantidad,
-                "precio": producto.precio,
-                "total": producto.precio * item.cantidad,
-                "imagen_url": f"http://localhost:8000{producto.imagen_url}"  # Añadir URL completa para la imagen
-            })
-    
-    return carrito_respuesta
 
 @app.post("/realizar_pedido/{email_cliente}/{metodo_pago}")
 def realizar_pedido(email_cliente: str, metodo_pago: str, db: Session = Depends(get_db)):
@@ -554,6 +709,8 @@ def realizar_pedido(email_cliente: str, metodo_pago: str, db: Session = Depends(
         nuevo_pedido = Order(cliente_id=db_user.id, estado='paid')
     elif metodo_pago == "PRESENCIAL":
         nuevo_pedido = Order(cliente_id=db_user.id, estado='reserved')
+    else:
+        raise HTTPException(status_code=400, detail="Método de pago no válido")
 
     db.add(nuevo_pedido)
     db.commit()
@@ -585,9 +742,57 @@ def realizar_pedido(email_cliente: str, metodo_pago: str, db: Session = Depends(
         "message": f"Pedido realizado exitosamente con ID {nuevo_pedido.id}",
         "monto_total": monto_total,
         "estado_pedido": nuevo_pedido.estado,
-        "id": nuevo_pedido.id  # Añadir el ID del pedido en la respuesta
+        "id": nuevo_pedido.id  
     }
+
+
+
+@app.get("/historialCompra")
+async def historalCompra(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+    email_user = token.get("sub")
+    if not email_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")  
     
+    db_user = db.query(User).filter(User.email == email_user).first() 
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
+
+    datos = db.query(Payment, Order, User, OrderDetail, Product) \
+        .join(Order, Order.id == Payment.pedido_id) \
+        .join(OrderDetail, OrderDetail.pedido_id == Order.id) \
+        .join(Product, Product.id == OrderDetail.producto_id) \
+        .join(User, User.id == Order.cliente_id) \
+        .filter(User.email == email_user) \
+        .all()
+
+    pedidos_dict = {}
+    for payment, order, user, order_detail, product in datos:
+        pedido_id = payment.pedido_id
+        if pedido_id not in pedidos_dict: 
+            pedidos_dict[pedido_id] = {
+                "pedido_id": pedido_id,
+                "comprador": user.nombre,
+                "metodo_pago": payment.metodo_pago,
+                "monto": payment.monto,
+                "estado_pedido": order.estado,
+                "fecha_pago": payment.fecha_pago.date(),
+                "productos": []
+            }
+        pedidos_dict[pedido_id]["productos"].append({
+            "producto_nombre": product.nombre,
+            "cantidad": order_detail.cantidad,
+            "precio_unitario": order_detail.precio_unitario,
+            "total_producto": order_detail.cantidad * order_detail.precio_unitario
+        })
+
+    pedidos_list = list(pedidos_dict.values())
+    pedidos_list_sorted = sorted(pedidos_list, key=lambda x: x["pedido_id"])
+
+    return pedidos_list_sorted
+
+
+
+
 @app.get("/InventarioPay")
 async def mostrar_InventarioPay(db: Session = Depends(get_db)):
     datos = db.query(Payment, Order, User, OrderDetail, Product) \
@@ -614,50 +819,9 @@ async def mostrar_InventarioPay(db: Session = Depends(get_db)):
         pedidos_dict[pedido_id]["productos"].append({
             "producto_nombre": product.nombre,
             "cantidad": order_detail.cantidad,
-            "precio_unitario": product.precio,
-        })
+            "precio_unitario": order_detail.precio_unitario,
+            "total_producto": order_detail.cantidad * order_detail.precio_unitario
 
-    pedidos_list = list(pedidos_dict.values())
-    pedidos_list_sorted = sorted(pedidos_list, key=lambda x: x["pedido_id"])
-
-    return pedidos_list_sorted
-
-
-@app.get("/historialCompra")
-async def historalCompra(token: str = Depends(verify_token), db:Session =Depends(get_db)):
-    email_user = token.get("sub")
-    if not email_user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")  
-    
-    db_user = db.query(User).filter(User.email == email_user).first() 
-    if db_user is None:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")  # Verifica si el usuario existe
-    
-    datos = db.query(Payment, Order, User, OrderDetail, Product) \
-        .join(Order, Order.id == Payment.pedido_id) \
-        .join(OrderDetail, OrderDetail.pedido_id == Order.id) \
-        .join(Product, Product.id == OrderDetail.producto_id) \
-        .join(User, User.id == Order.cliente_id) \
-        .filter(User.email == email_user) \
-        .all()
-
-    pedidos_dict = {}
-    for payment, order, user, order_detail, product in datos:
-        pedido_id = payment.pedido_id
-        if pedido_id not in pedidos_dict: 
-            pedidos_dict[pedido_id] = {
-                "pedido_id": pedido_id,
-                "comprador": user.nombre,
-                "metodo_pago": payment.metodo_pago,
-                "monto": payment.monto,
-                "estado_pedido": order.estado,
-                "fecha_pago": payment.fecha_pago.date(),
-                "productos": []
-            }
-        pedidos_dict[pedido_id]["productos"].append({
-            "producto_nombre": product.nombre,
-            "cantidad": order_detail.cantidad,
-            "precio_unitario": product.precio,
         })
 
     pedidos_list = list(pedidos_dict.values())
