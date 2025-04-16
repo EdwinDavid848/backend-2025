@@ -60,7 +60,6 @@ SCOPES = [
 REDIRECT_URI = "http://localhost:8000/auth/callback"
 
 #Iniciar Flujo
-load_dotenv()  # Carga las variables de entorno desde el archivo .env
 # Recuperar el JSON desde la variable de entorno
 credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 print(credentials_json)

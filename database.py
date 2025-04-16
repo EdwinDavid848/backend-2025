@@ -12,7 +12,9 @@ DB_PASSWORD = os.getenv("MYSQLPASSWORD")
 DB_HOST = os.getenv("MYSQLHOST")
 DB_PORT = os.getenv("MYSQLPORT")
 DB_NAME = os.getenv("MYSQLDATABASE")
-
+print(DB_USER)
+credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+print(credentials_json)
 DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}" 
 
 engine = create_engine(DATABASE_URL)
