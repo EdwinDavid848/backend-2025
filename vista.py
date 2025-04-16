@@ -21,8 +21,6 @@ from urllib.parse import quote
 from sqlalchemy import func
 
 
-with open("credentials.json", "r") as f:
-
 
 
 app = FastAPI()
