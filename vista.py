@@ -20,7 +20,7 @@ from sqlalchemy import or_
 from urllib.parse import quote
 from sqlalchemy import func
 
-
+from dotenv import load_dotenv
 
 
 
