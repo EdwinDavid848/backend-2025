@@ -4,7 +4,8 @@ from sqlalchemy.orm import sessionmaker
 
 
 #DATABASE_URL = "mysql+mysqlconnector://admin_adso:adso_2025*@127.0.0.1:3366/db"
-DATABASE_URL = "mysql+mysqlconnector://root:8480@localhost:3306/proyecto5"
+#DATABASE_URL = "mysql+mysqlconnector://root:8480@localhost:3306/proyecto5"
+DATABASE_URL = "mysql+mysqlconnector://root:CkoZOLKhfndrYazbNpJKatdJAFukzGuO@interchange.proxy.rlwy.net:14289/dbRailway"
 
 
 engine = create_engine(DATABASE_URL)
