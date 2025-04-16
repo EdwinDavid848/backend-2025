@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, Enum, Float, TIMESTAMP, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, Enum, Float, TIMESTAMP, ForeignKey,Date,Time,Boolean
 from database import Base
 import enum
 from datetime import datetime
@@ -16,6 +16,20 @@ class category(enum.Enum):
     agujas="agujas"
     peluche="peluche"
     ropa="ropa"
+
+class PaymentMethod(enum.Enum):
+    nequi="nequi"
+    daviplata="daviplata"
+    presencial="presencial"
+
+class dias(enum.Enum):
+    lunes="lunes",
+    martes="martes",
+    miercoles="miercoles",
+    jueves="jueves",
+    viernes="viernes"
+
+
 
 class OrderStatus(enum.Enum):
     reserved = "reserved"
@@ -42,6 +56,7 @@ class Product(Base):
     color = Column(String(250), nullable=False)
     category = Column(Enum(category))
     imagen_url = Column(String(300))
+    activo = Column(Boolean, default=True)
 
 class Order(Base):
     __tablename__ = 'orders'
@@ -64,6 +79,20 @@ class OrderDetail(Base):
     Products=relationship('Product')
 
 
+class Payment(Base):
+    __tablename__ = 'payments'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pedido_id = Column(Integer, ForeignKey('orders.id'))
+    reservation_id = Column(Integer, ForeignKey('class_reservations.id'))
+    metodo_pago = Column(Enum(PaymentMethod),nullable=False)
+    monto = Column(Float, nullable=False)
+    fecha_pago = Column(TIMESTAMP, default=datetime.utcnow)
+    
+    
+    Orders=relationship('Order')
+    Reservatons=relationship('ClassReservation')
+
+
 
 class Cart(Base):
     __tablename__ = 'carts'
@@ -83,3 +112,41 @@ class DetailsCart(Base):
 
     cart = relationship('Cart', back_populates="detalles")
     product = relationship('Product') 
+
+
+class Class(Base):
+    __tablename__ = 'class'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    titulo = Column(String(255))
+    descripcion = Column(String(255))
+    profesor = Column(String(255))
+    fecha = Column(Enum(dias), nullable=False)
+    comienzo = Column(Time)
+    final = Column(Time)
+    precio = Column(Float)
+    habilitado = Column(Boolean, default=True)
+    imagen=Column(String(255))
+
+    reservations = relationship("ClassReservation")
+
+class ClassReservation(Base):
+    __tablename__ = 'class_reservations'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    id_clase = Column(Integer, ForeignKey('class.id'))
+    id_user = Column(Integer, ForeignKey('users.id'))
+    fecha_class = Column(Date)
+    estado = Column(Enum(OrderStatus), default=OrderStatus.reserved)
+    
+    user = relationship('User')
+    clase = relationship('Class')
+    
+# Tabla Publications (Mural)
+class Publication(Base):
+    __tablename__ = 'publications'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    id_user = Column(Integer, ForeignKey('users.id'))
+    titulo = Column(String(255))
+    descripcion = Column(String(255))
+    foto = Column(String(255))
+    
+    user = relationship('User')

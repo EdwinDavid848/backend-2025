@@ -2,8 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine, Base
-from models import User,Product, Cart, DetailsCart, OrderDetail 
-from schemas import UserCreate, UserLogin, CarritoAgregar, CarritoResponseModel, Usuario, UpdateRequest, UpdatePassword, ForgotPasswordRequest, ResetPasswordRequest
+from models import User,Product, Cart, DetailsCart, OrderDetail ,Order,Payment,Class,ClassReservation,OrderStatus,Publication
+from schemas import ReservationClass,UserCreate, UserLogin, CarritoAgregar, CarritoResponseModel, Usuario, UpdateRequest, UpdatePassword, ForgotPasswordRequest, ResetPasswordRequest,mural,PayClass
 from security import hash_password, verify_password, create_access_token,verify_token
 from fastapi.staticfiles import StaticFiles
 import os
@@ -13,10 +13,12 @@ from google.oauth2.credentials import Credentials
 from email.mime.text import MIMEText 
 import base64 
 from googleapiclient.discovery import build 
-from datetime import timedelta
+from datetime import time,timedelta
 from fastapi.responses import RedirectResponse
-
-
+from typing import List
+from sqlalchemy import or_
+from urllib.parse import quote
+from sqlalchemy import func
 
 
 
@@ -26,7 +28,10 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080"],  
+    allow_origins=[
+        "http://localhost:8080",
+        "http://127.0.0.1:8080"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -133,47 +138,32 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
 @app.get("/auth/callback")
 async def callback(code: str, db: Session = Depends(get_db)):
     try:
-        print("Código de autorización recibido:", code)
-
-        # Intercambiar el código por un token de acceso
         flow.fetch_token(code=code)
-
-        # Obtener credenciales
         credentials = flow.credentials
 
-        # Guardar las credenciales en un archivo token.json
-        with open("token.json", "w") as token_file:
-            token_file.write(credentials.to_json())  # Guardar credenciales como JSON
-
-        # Obtener información del usuario desde Google
         user_info_service = build("oauth2", "v2", credentials=credentials)
         user_info = user_info_service.userinfo().get().execute()
         
         email = user_info["email"]
         nombre = user_info.get("name", "Usuario")
-        print(email,nombre)
 
-        # Verificar si el usuario ya está en la base de datos
         db_user = db.query(User).filter(User.email == email).first()
 
         if not db_user:
-            # Si el usuario no existe, crearlo con rol de "cliente"
             new_user = User(email=email, nombre=nombre, rol="cliente")
             db.add(new_user)
             db.commit()
             db.refresh(new_user)
-            print("Usuario registrado como cliente")
 
-        # Generar el token JWT
         access_token = create_access_token(data={"sub": email, "rol": "cliente"})
         
-        # Redirigir al frontend con el token
-        return RedirectResponse(url=f"http://localhost:5173/Perfil?token={access_token}")
+        # Redirige a una ruta especial que maneje el token (ej: /auth-callback en frontend)
+        token_encoded = quote(access_token)  # Codifica el token para la URL
+        return RedirectResponse(url=f"http://localhost:8080/auth-callback?token={token_encoded}")
 
     except Exception as e:
         print(f"Error en el callback: {e}")
-        raise HTTPException(status_code=400, detail=f"Error en la autenticación: {e}")
-
+        return RedirectResponse(url="http://localhost:8080/register")
 
 @app.get("/auth/login")
 async def login():
@@ -247,6 +237,8 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
         db_user.telefono = data.value
     elif campo == 'nombre':
         db_user.nombre = data.value
+    elif campo == 'rol':
+        db_user.rol = data.value
 
     db.commit()
     db.refresh(db_user)
@@ -254,8 +246,12 @@ async def update_user_data(campo: str,email: str,data: UpdateRequest, db: Sessio
     return {"message": f"{campo.capitalize()} actualizado exitosamente", "user": db_user}
 
 
-
-
+@app.get("/todousuarios", response_model=List[Usuario])  
+async def obtener_usuario(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+    usuarios = db.query(User).all()
+    if not usuarios:
+        raise HTTPException(status_code=404, detail="No hay usuarios en la base de datos")
+    return usuarios
 
 
 @app.put("/password/")
@@ -284,7 +280,15 @@ app.mount("/images", StaticFiles(directory="img"), name="images")
 
 @app.get("/mostrarimagenes")
 def obtener_imagenes(limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
-    productos = db.query(Product).offset(offset).limit(limit).all()  
+    productos = (
+        db.query(Product)
+        .filter(Product.activo == True)
+        .order_by(func.rand()) 
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    
     return [
         {
             "id": producto.id,
@@ -302,7 +306,7 @@ def obtener_imagenes(limit: int = 10, offset: int = 0, db: Session = Depends(get
 
 @app.get("/mostrarimagenes_Categoria/{category}")
 def obtener_imagenes(category: str, limit: int = 10, offset: int = 0, db: Session = Depends(get_db)):
-    productos = db.query(Product).filter(Product.category == category).offset(offset).limit(limit).all()
+    productos = db.query(Product).filter(Product.category == category and Product.activo == True).offset(offset).limit(limit).all()
     return [
         {
             "id": producto.id,
@@ -321,7 +325,7 @@ def obtener_imagenes(category: str, limit: int = 10, offset: int = 0, db: Sessio
 
 @app.get("/buscar_producto/{id}")
 def obtener_imagenes(id: int, db: Session = Depends(get_db)):
-    producto = db.query(Product).filter(Product.id == id).first()
+    producto = db.query(Product).filter(Product.id == id and Product.activo == True).first()
     if producto:  
         return {
             "id": producto.id,
@@ -456,7 +460,7 @@ def eliminar_del_carrito(email_cliente: str, producto_id: int, db: Session = Dep
 
 @app.get("/informacionTabla")
 def obtener_imagenes(db: Session = Depends(get_db)):
-    productos = db.query(Product).all()  
+    productos = db.query(Product).all()
     return [
         {
             "id": producto.id,
@@ -466,6 +470,7 @@ def obtener_imagenes(db: Session = Depends(get_db)):
             "tipo_unidad": producto.tipo_unidad,
             "color": producto.color,
             "category": producto.category,
+            "activo" : producto.activo,
             "imagen_url": f"http://localhost:8000{producto.imagen_url}"
         }
         for producto in productos
@@ -477,17 +482,37 @@ def obtener_imagenes(category: str, db: Session = Depends(get_db)):
     productos = db.query(Product).filter(Product.category == category).all()
     return [
         {
-            "id": producto.id,
+          "id": producto.id,
             "nombre": producto.nombre,
             "descripcion": producto.descripcion,
             "precio": producto.precio,
             "tipo_unidad": producto.tipo_unidad,
             "color": producto.color,
             "category": producto.category,
+            "activo" : producto.activo,
             "imagen_url": f"http://localhost:8000{producto.imagen_url}"
         }
         for producto in productos
     ]
+
+@app.get("/informacionTablaNombre/{nombre}")
+def obtener_imagenes(nombre: str, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.nombre.ilike(nombre) ).first()
+    
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    
+    return {
+         "id": producto.id,
+            "nombre": producto.nombre,
+            "descripcion": producto.descripcion,
+            "precio": producto.precio,
+            "tipo_unidad": producto.tipo_unidad,
+            "color": producto.color,
+            "category": producto.category,
+            "activo" : producto.activo,
+            "imagen_url": f"http://localhost:8000{producto.imagen_url}"
+    }
 
 
 
@@ -623,34 +648,749 @@ async def eliminar_producto(product_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"status": "Producto eliminado exitosamente", "product_id": product_id}
-@app.delete("/productos/{producto_id}", response_model=dict)
-async def eliminar_producto(producto_id: int, db: Session = Depends(get_db)):
-    order_details = db.query(OrderDetail).filter(OrderDetail.producto_id == producto_id).all()
-    for order_detail in order_details:
-        db.delete(order_detail)  
-
-    producto = db.query(Product).filter(Product.id == producto_id).first()
-    if not producto:
-        raise HTTPException(status_code=404, detail="Producto no encontrado")
-    
-    db.delete(producto)  
-    db.commit()
-    
-    return {"detail": "Producto eliminado exitosamente"}
-
 
 
 @app.delete("/productos/{producto_id}", response_model=dict)
 async def eliminar_producto(producto_id: int, db: Session = Depends(get_db)):
-    order_details = db.query(OrderDetail).filter(OrderDetail.producto_id == producto_id).all()
-    for order_detail in order_details:
-        db.delete(order_detail)  
-
     producto = db.query(Product).filter(Product.id == producto_id).first()
     if not producto:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    producto.activo = False
+    db.commit()
+    db.refresh(producto)
+
+    return {"detail": "Producto desactivado correctamente"}
+
+@app.put("/productos/desactivar/{producto_id}", response_model=dict)
+def desactivar_producto(producto_id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == producto_id).first()
+
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    producto.activo = False
+    db.commit()
+    db.refresh(producto)
+
+    return {"detail": "Producto desactivado correctamente"}
+
+
+@app.put("/estado_producto/{accion}/{producto_id}", response_model=dict)
+def estado_producto(accion: str, producto_id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == producto_id).first()
+
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    if accion == "activar":
+        producto.activo = True
+    elif accion == "desactivar":
+        producto.activo = False
+    else:
+        raise HTTPException(status_code=400, detail="Acción inválida. Usa 'activar' o 'desactivar'.")
+
+    db.commit()
+    db.refresh(producto)
+
+    return {"detail": f"Producto {accion} correctamente"}
+
+
+@app.delete("/productos/{producto_id}", response_model=dict)
+async def eliminar_producto(producto_id: int, db: Session = Depends(get_db)):
+    producto = db.query(Product).filter(Product.id == producto_id).first()
     
-    db.delete(producto)  
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    if not producto:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    producto.activo = False
+    db.commit()
+    db.refresh(producto)
+
+    return {"detail": "Producto desactivado correctamente"}
+
+
+@app.post("/realizar_pedido/{email_cliente}/{metodo_pago}")
+def realizar_pedido(email_cliente: str, metodo_pago: str, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == email_cliente).first()
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
+
+    carrito = db.query(Cart).filter_by(cliente_id=db_user.id).first()
+    if carrito is None:
+        raise HTTPException(status_code=404, detail="No hay productos en el carrito para procesar el pedido")
+    detalles_carrito = db.query(DetailsCart).filter_by(carrito_id=carrito.id).all()
+    if not detalles_carrito:
+        raise HTTPException(status_code=404, detail="El carrito está vacío")
+
+    if metodo_pago == "NEQUI" or metodo_pago == "TARJETA":
+        nuevo_pedido = Order(cliente_id=db_user.id, estado='paid')
+    elif metodo_pago == "PRESENCIAL":
+        nuevo_pedido = Order(cliente_id=db_user.id, estado='reserved')
+    else:
+        raise HTTPException(status_code=400, detail="Método de pago no válido")
+
+    db.add(nuevo_pedido)
+    db.commit()
+    db.refresh(nuevo_pedido)  
+
+    for detalle in detalles_carrito:
+        detalle_pedido = OrderDetail(
+            pedido_id=nuevo_pedido.id,
+            producto_id=detalle.producto_id,
+            cantidad=detalle.cantidad,
+            precio_unitario=detalle.product.precio  
+        )
+        db.add(detalle_pedido)
+
+    monto_total = sum(detalle.cantidad * detalle.product.precio for detalle in detalles_carrito)
+
+    nuevo_pago = Payment(
+        pedido_id=nuevo_pedido.id,
+        metodo_pago=metodo_pago, 
+        monto=monto_total
+    )
+    db.add(nuevo_pago)
+
+    db.query(DetailsCart).filter_by(carrito_id=carrito.id).delete()
+
+    db.commit()
+
+    return {
+        "message": f"Pedido realizado exitosamente con ID {nuevo_pedido.id}",
+        "monto_total": monto_total,
+        "estado_pedido": nuevo_pedido.estado,
+        "id": nuevo_pedido.id  
+    }
+
+
+@app.get("/historialCompra")
+async def historalCompra(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+    email_user = token.get("sub")
+    if not email_user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")  
+    
+    db_user = db.query(User).filter(User.email == email_user).first() 
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado en la base de datos")
+
+    datos = db.query(Payment, Order, User, OrderDetail, Product) \
+        .join(Order, Order.id == Payment.pedido_id) \
+        .join(OrderDetail, OrderDetail.pedido_id == Order.id) \
+        .join(Product, Product.id == OrderDetail.producto_id) \
+        .join(User, User.id == Order.cliente_id) \
+        .filter(User.email == email_user) \
+        .all()
+
+    pedidos_dict = {}
+    for payment, order, user, order_detail, product in datos:
+        pedido_id = payment.pedido_id
+        if pedido_id not in pedidos_dict: 
+            pedidos_dict[pedido_id] = {
+                "pedido_id": pedido_id,
+                "comprador": user.nombre,
+                "email": user.email,
+                "telefono": user.telefono,
+                "fecha_pedido": order.fecha_pedido.date() if order.fecha_pedido else None,
+                "metodo_pago": payment.metodo_pago,
+                "monto": payment.monto,
+                "estado_pedido": order.estado,
+                "fecha_pago": payment.fecha_pago.date(),
+                "productos": []
+            }
+        pedidos_dict[pedido_id]["productos"].append({
+            "producto_nombre": product.nombre,
+            "categoria": product.categoria if hasattr(product, "categoria") else "N/A",
+            "imagen": product.imagen if hasattr(product, "imagen") else "",
+            "cantidad": order_detail.cantidad,
+            "precio_unitario": order_detail.precio_unitario,
+            "total_producto": order_detail.cantidad * order_detail.precio_unitario
+        })
+
+    pedidos_list = list(pedidos_dict.values())
+    pedidos_list_sorted = sorted(pedidos_list, key=lambda x: x["pedido_id"])
+
+    return pedidos_list_sorted
+
+
+
+@app.get("/InventarioPay")
+async def mostrar_InventarioPay(db: Session = Depends(get_db)):
+    datos = db.query(Payment, Order, User, OrderDetail, Product) \
+        .join(Order, Order.id == Payment.pedido_id) \
+        .join(OrderDetail, OrderDetail.pedido_id == Order.id) \
+        .join(Product, Product.id == OrderDetail.producto_id) \
+        .join(User, User.id == Order.cliente_id) \
+        .all()
+
+    pedidos_dict = {}
+    for payment, order, user, order_detail, product in datos:
+        pedido_id = payment.pedido_id
+        if pedido_id not in pedidos_dict: 
+            pedidos_dict[pedido_id] = {
+                "pedido_id": pedido_id,
+                "comprador": user.nombre,
+                "correo": user.email,
+                "metodo_pago": payment.metodo_pago,
+                "monto": payment.monto,
+                "estado_pedido": order.estado,
+                "fecha_pago": payment.fecha_pago.date(),
+                "productos": []
+            }
+        pedidos_dict[pedido_id]["productos"].append({
+            "producto_nombre": product.nombre,
+            "cantidad": order_detail.cantidad,
+            "precio_unitario": order_detail.precio_unitario,
+            "total_producto": order_detail.cantidad * order_detail.precio_unitario
+
+        })
+
+    pedidos_list = list(pedidos_dict.values())
+    pedidos_list_sorted = sorted(pedidos_list, key=lambda x: x["pedido_id"])
+
+    return pedidos_list_sorted
+
+
+#GESTION DE CLASES========================================================================================================
+
+#Todas las clases
+@app.get("/allClass")
+async def consultDatesClass(db: Session = Depends(get_db)):
+    allClass = db.query(Class).all()
+    return [
+        {
+            "id":Class.id,
+            "titulo": Class.titulo,
+            "descripcion": Class.descripcion,
+            "profesor": Class.profesor,
+            "fecha": Class.fecha,  
+            "comienzo": Class.comienzo,
+            "final": Class.final,
+            "precio": Class.precio,
+            "habilitado":Class.habilitado,
+            "imagen": f"http://localhost:8000{Class.imagen}"
+        }
+        for Class in allClass
+    ]
+
+
+
+# Insertar clase
+@app.post("/insertClass/")
+async def insert_class(
+    titulo:str=Form(...),
+    descripcion:str=Form(...),
+    profesor: str = Form(...), 
+    fecha: str = Form(...), 
+    comienzo:time = Form(...), 
+    final:time = Form(...), 
+    precio:float = Form(...), 
+    imagen:UploadFile = File(...),
+    db: Session = Depends(get_db)):
+    existing_class = db.query(Class).filter(Class.titulo == titulo).first()
+    if existing_class:
+        raise HTTPException(status_code=400, detail="La clase ya está registrada")
+    
+    # Ruta de guardado del archivo
+    folder_path = "img"
+    file_location = os.path.join(folder_path, imagen.filename)
+    
+    
+    # Guardar el archivo en el servidor
+    with open(file_location, "wb") as buffer:
+        buffer.write(await imagen.read())
+
+    # Crear una URL accesible para la imagen
+    img = f"/images/{imagen.filename}"
+    
+    new_class = Class(
+        titulo = titulo,
+        descripcion = descripcion,
+        profesor = profesor,
+        fecha = fecha,
+        comienzo = comienzo,
+        final = final,
+        precio = precio,
+        imagen = img
+    )
+    
+    db.add(new_class)
+    db.commit()
+    db.refresh(new_class)
+    return new_class
+
+# Editar clase
+@app.put("/editClass/{titulo}")
+async def edit_class(
+    titulo: str,
+    new_titulo: str = Form(...),
+    descripcion: str = Form(...),
+    profesor: str = Form(...),
+    fecha: str = Form(...),
+    comienzo: str = Form(...),
+    final: str = Form(...),
+    precio: float = Form(...),
+    imagen: UploadFile = File(None),  # Imagen opcional
+    db: Session = Depends(get_db)
+):
+    # Buscar la clase en la base de datos por título
+    existing_class = db.query(Class).filter(Class.titulo == titulo).first()
+    
+    if not existing_class:
+        raise HTTPException(status_code=404, detail="Clase no registrada")
+
+    # Verificar si ya existe una clase con el nuevo título proporcionado
+    repit_class = db.query(Class).filter(Class.titulo == new_titulo).first()
+    if repit_class and repit_class.id != existing_class.id:
+        raise HTTPException(status_code=400, detail="Clase ya registrada con ese título")
+    
+    # Actualizar campos de texto
+    existing_class.titulo = new_titulo
+    existing_class.descripcion = descripcion
+    existing_class.profesor = profesor
+    existing_class.fecha = fecha
+    existing_class.comienzo = comienzo
+    existing_class.final = final
+    existing_class.precio = precio
+
+    # Si se proporciona una nueva imagen, procesarla
+    if imagen:
+        # Validar el tipo de archivo
+        if imagen.content_type not in ["image/jpeg", "image/png"]:
+            raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
+
+        # Ruta de guardado del archivo
+        folder_path = "img"
+        file_location = os.path.join(folder_path, imagen.filename)
+        
+        # Crear la carpeta si no existe
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Guardar el archivo en el servidor
+        with open(file_location, "wb") as buffer:
+            buffer.write(await imagen.read())
+
+        # Crear una URL accesible para la nueva imagen
+        existing_class.imagen = f"/images/{imagen.filename}"
+
+    # Guardar los cambios en la base de datos
+    db.commit()
+    db.refresh(existing_class)
+
+    # Respuesta con la información actualizada de la clase
+    return existing_class
+
+# Cambiar estado de habilitar/deshabilitar clase
+@app.put("/editHability/{title}/{hability}")
+async def edit_hability(title: str, hability: bool, db: Session = Depends(get_db)):
+    existing_class = db.query(Class).filter(Class.id == title).first()
+
+    if not existing_class:
+        raise HTTPException(status_code=404, detail="Clase no encontrada")
+
+    existing_class.habilitado = hability
+    db.commit()
+    db.refresh(existing_class)
+
+    return existing_class
+
+# Eliminar clase
+@app.delete("/deleteClass/{title}")
+async def delete_class(title: int, db: Session = Depends(get_db)):
+    existing_class = db.query(Class).filter(Class.id == title).first()
+
+    if not existing_class:
+        raise HTTPException(status_code=404, detail="Clase no encontrada")
+
+    # Actualizar el estado de las reservas en lugar de eliminarlas
+    db.query(ClassReservation).filter(
+        ClassReservation.id_clase == title,
+        or_(ClassReservation.estado == "paid", ClassReservation.estado == "cancelled")
+    ).update({"estado": "cancelled"}, synchronize_session=False)
+
+    # Ahora eliminar la clase
+    db.delete(existing_class)
+    db.commit()
+
+    return {"message": "Clase eliminada"}
+
+#Reservaciones
+@app.get("/Reservations/")
+async def mostrar(db: Session = Depends(get_db)):
+    # Obtener todas las reservaciones
+    allReservas = db.query(ClassReservation).all()
+
+    # Lista para almacenar las respuestas
+    reservas = []
+
+    # Iterar sobre todas las reservaciones
+    for reserva in allReservas:
+        # Obtener la clase asociada a la reservación
+        clase = db.query(Class).filter(Class.id == reserva.id_clase).first()
+        
+        # Obtener el usuario asociado a la reservación
+        user = db.query(User).filter(User.id == reserva.id_user).first()
+        
+        # Agregar la información de la reservación a la lista de reservas
+        reservas.append({
+            "id": reserva.id,
+            "clase": clase.titulo if clase else None,  # Asegurarse de que clase exista
+            "usuario": user.email if user else None,    # Asegurarse de que user exista
+            "fecha": reserva.fecha_class,
+            "monto": clase.precio,
+            "estado": reserva.estado
+        })
+    
+    return reservas
+
+#Buscador de Reservacion
+@app.get("/SearchClass/{email}/{state}")
+async def buscarReservacion(email: str, state:OrderStatus, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == email).first()
+    if not existing_user:
+        raise HTTPException(status_code=400, detail="El usuario no existe")
+
+    # Join entre reservaciones y clases para traer la información completa
+    reservas = db.query(ClassReservation, Class).join(Class, Class.id == ClassReservation.id_clase)\
+        .filter(ClassReservation.id_user == existing_user.id).all()
+
+    if not reservas:
+        raise HTTPException(status_code=400, detail="El usuario no tiene reservaciones")
+    
+    estado=db.query(ClassReservation).filter(ClassReservation.estado==state).all()
+    
+    if not estado:
+        raise HTTPException(status_code=400, detail="El estado es incorrecto o el usuario no tiene reservaciones con ese estado")
+
+    reservas_detalladas = [
+        {
+            "id": reserva.id,
+            "clase": clase.titulo,
+            "usuario":existing_user.nombre,
+            "fecha": reserva.fecha_class,
+            "monto": clase.precio,
+            "estado": reserva.estado
+        }
+        for reserva, clase in reservas
+    ]
+    return reservas_detalladas
+
+
+#Reservaciones de usuario
+@app.get('/reservaciones/{user}')
+async def mostrar_reservas(user: str, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter(User.email == user).first()
+    if not existing_user:
+        raise HTTPException(status_code=400, detail="El usuario no existe")
+
+    # Join entre reservaciones y clases para traer la información completa
+    reservas = db.query(ClassReservation, Class).join(Class, Class.id == ClassReservation.id_clase)\
+        .filter(ClassReservation.id_user == existing_user.id).all()
+
+    if not reservas:
+        raise HTTPException(status_code=400, detail="El usuario no tiene reservaciones")
+
+    reservas_detalladas = [
+        {
+            "id": reserva.id,
+            "clase": clase.titulo,
+            "usuario":existing_user.nombre,
+            "fecha": reserva.fecha_class,
+            "monto": clase.precio,
+            "estado": reserva.estado
+        }
+        for reserva, clase in reservas
+    ]
+    return reservas_detalladas
+
+
+# Reservar clase
+@app.post("/reservarClass/")
+async def reservar_class(reservation: ReservationClass, db: Session = Depends(get_db)):
+    existing_class=db.query(Class).filter(Class.titulo == reservation.titulo_clase).first()
+    if not existing_class:
+        raise HTTPException(status_code=400,detail="la clase no existe")
+    
+    existing_user=db.query(User).filter(User.email == reservation.email_user).first()
+    if not existing_user:
+        raise HTTPException(status_code=400,detail="el usuario no existe")
+    
+    existing = db.query(ClassReservation).filter(
+        ClassReservation.id_user == existing_user.id,
+        ClassReservation.id_clase == existing_class.id,
+        ClassReservation.fecha_class == reservation.date_class
+    ).first()
+
+    if existing:
+        raise HTTPException(status_code=400, detail="Ya existe una reservación para esta clase en esta fecha")
+
+    
+    new_reservation = ClassReservation(
+        id_clase=existing_class.id,
+        id_user=existing_user.id,
+        fecha_class=reservation.date_class,
+    )
+    db.add(new_reservation)
+    db.commit()
+    db.refresh(new_reservation)
+
+    return new_reservation
+
+#Editar el estado de la reserva
+@app.put('/EditReserver/{id}/{state}')
+async def editarReserva(id:int,state:OrderStatus,db: Session = Depends(get_db)):
+    existing_reserv = db.query(ClassReservation).filter(ClassReservation.id == id).first()
+
+    if not existing_reserv:
+        raise HTTPException(status_code=404, detail="Reservacion no encontrada")
+
+    existing_reserv.estado = state
+    db.commit()
+    db.refresh(existing_reserv)
+
+    
+
+@app.delete('/DeleteReservation/{id}')
+async def eliminarReserva(id:int, db:Session=Depends(get_db)):
+    existing_reserv = db.query(ClassReservation).filter(ClassReservation.id == id).first()
+    if not existing_reserv:
+        raise HTTPException(status_code=404, detail="Reservacion no encontrada")
+
+    db.delete(existing_reserv)
     db.commit()
     
-    return {"detail": "Producto eliminado exitosamente"}
+    return {"message": "reservacion eliminada"}
+
+
+
+# Pagar clase
+@app.post("/pagarClass/", response_model=None)
+async def pagar_class(payment: PayClass, db: Session = Depends(get_db)):
+    print("Datos recibidos:", payment.dict())
+
+    try:
+        existing_reservation = db.query(ClassReservation).filter(ClassReservation.id == payment.reservation_id).first()
+        
+        if not existing_reservation:
+            raise HTTPException(status_code=400, detail="La reserva no existe")
+
+        # Crear el nuevo pago relacionado con la reserva
+        new_payment = Payment(
+            reservation_id = existing_reservation.id,
+            metodo_pago = payment.metodo_pago,
+            monto = payment.monto,
+            fecha_pago = payment.fecha_pago
+        )
+        
+        db.add(new_payment)
+        db.commit()
+        db.refresh(new_payment)
+        
+        return new_payment
+    except Exception as e:
+        print("Error:", e)
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+#GESTION MURAL====================================================================
+
+
+@app.post('/mural/', response_model=None)
+async def agregarmural(
+    email: str = Form(...),
+    titulo: str = Form(...),
+    descripcion: str = Form(...), 
+    foto: UploadFile = File(...),
+    db: Session = Depends(get_db)):
+    
+    dat = db.query(User).filter(User.email == email).first()
+    
+    if not dat:
+        raise HTTPException(status_code=400, detail="Inicie sesión antes")
+    
+    # Validar el tipo de archivo
+    if foto.content_type not in ["image/jpeg", "image/png"]:
+        raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
+
+    # Ruta de guardado del archivo
+    folder_path = "img"
+    file_location = os.path.join(folder_path, foto.filename)
+    
+    # Crear la carpeta si no existe
+    os.makedirs(folder_path, exist_ok=True)
+
+    # Guardar el archivo en el servidor
+    with open(file_location, "wb") as buffer:
+        buffer.write(await foto.read())
+
+    # Crear una URL accesible para la imagen
+    foto_url = f"/images/{foto.filename}"
+    
+    nuevo = Publication(
+        id_user=dat.id,
+        titulo=titulo,
+        descripcion=descripcion,
+        foto=foto_url
+    )
+    
+    db.add(nuevo)
+    db.commit()
+    db.refresh(nuevo)
+    
+    return {
+        "id": nuevo.id,
+        "id_user": nuevo.id_user,
+        "titulo": nuevo.titulo,
+        "descripcion": nuevo.descripcion,
+        "foto": nuevo.foto
+    }
+
+
+
+@app.put("/editmural/{id}")
+async def editmural(
+    id: int,
+    titulo: str = Form(...),
+    descripcion: str = Form(...),
+    foto: UploadFile = File(None),  # La imagen es opcional en el método PUT
+    db: Session = Depends(get_db)
+):
+    # Buscar la publicación en la base de datos
+    mural = db.query(Publication).filter(Publication.id == id).first()
+
+    if mural is None:
+        raise HTTPException(status_code=404, detail="Mural no encontrado")
+
+    # Actualizar título y descripción
+    mural.titulo = titulo
+    mural.descripcion = descripcion
+
+    # Si se proporciona una nueva imagen, procesarla
+    if foto:
+        # Validar el tipo de archivo
+        if foto.content_type not in ["image/jpeg", "image/png"]:
+            raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
+
+        # Ruta de guardado del archivo
+        folder_path = "img"
+        file_location = os.path.join(folder_path, foto.filename)
+        
+        # Crear la carpeta si no existe
+        os.makedirs(folder_path, exist_ok=True)
+
+        # Guardar el archivo en el servidor
+        with open(file_location, "wb") as buffer:
+            buffer.write(await foto.read())
+
+        # Crear una URL accesible para la nueva imagen
+        mural.foto = f"/images/{foto.filename}"
+
+    # Guardar los cambios en la base de datos
+    db.commit()
+    db.refresh(mural)
+
+    # Respuesta con la información actualizada del mural
+    return {
+        "id": mural.id,
+        "id_user": mural.id_user,
+        "titulo": mural.titulo,
+        "descripcion": mural.descripcion,
+        "foto": mural.foto
+    }
+
+
+
+@app.delete("/deletemural/{id}")
+async def deletemural(id: str, db: Session = Depends(get_db)):
+    code = db.query(Publication).filter(Publication.id == id).first()
+
+    if code is None:
+        raise HTTPException(status_code=404, detail="publicacion no encontrada")
+
+    db.delete(code)
+    db.commit()
+
+    return {"detail": "publicacion eliminada exitosamente"}
+
+@app.get("/publicaciones/", response_model=list[mural])
+async def publicaciones(db: Session = Depends(get_db)):
+    allpublications = db.query(Publication).all()
+    return [
+        {
+            "id": publication.id,
+            "id_user": publication.id_user,
+            "email": db.query(User).filter(User.id == publication.id_user).first().email,
+            "titulo": publication.titulo,  # Cambiado a 'titulo'
+            "descripcion": publication.descripcion,  # Cambiado a 'descripcion'
+            "foto": f"http://localhost:8000{publication.foto}"  # Cambiado a 'foto'
+        }
+        for publication in allpublications
+    ]
+
+
+
+@app.get("/publicacionestitulo/{busca}")
+async def buscarpublic(busca: str, db: Session = Depends(get_db)):
+    allpublications = db.query(Publication).filter(Publication.titulo==busca).all()
+
+    if not allpublications:
+        raise HTTPException(status_code=404, detail="No se encontraron publicaciones con ese título")
+
+    return [
+        {
+            "id": publication.id,
+            "id_user": publication.id_user,
+            "email": db.query(User).filter(User.id == publication.id_user).first().email,
+            "titulo": publication.titulo,
+            "descripcion": publication.descripcion,
+            "foto": f"http://localhost:8000{publication.foto}"
+        }
+        for publication in allpublications
+    ]
+
+@app.get("/publicacionesusuario/{busca}")
+async def buscarpublic(busca: str, db: Session = Depends(get_db)):
+    # Buscar el usuario por su correo
+    user = db.query(User).filter(User.email == busca).first()
+
+    # Si no se encuentra el usuario, lanzar una excepción 404
+    if not user:
+        raise HTTPException(status_code=404, detail="No se encontró el usuario")
+
+    # Obtener todas las publicaciones del usuario
+    allpublications = db.query(Publication).filter(Publication.id_user == user.id).all()
+
+    # Si el usuario no tiene publicaciones, lanzar una excepción 404
+    if not allpublications:
+        raise HTTPException(status_code=404, detail="No se encontraron publicaciones para este usuario")
+
+    # Retornar los datos en formato JSON
+    return [
+        {
+            "id": publication.id,
+            "id_user": publication.id_user,
+            "email": user.email,
+            "titulo": publication.titulo,
+            "descripcion": publication.descripcion,
+            "foto": f"http://localhost:8000{publication.foto}"
+        }
+        for publication in allpublications
+    ]
+
+@app.get("/publicaciones/", response_model=list[mural])
+async def publicaciones(db: Session = Depends(get_db)):
+    allpublications = db.query(Publication).all()
+    return [
+        {
+            "id": publication.id,
+            "id_user": publication.id_user,
+            "email": db.query(User).filter(User.id == publication.id_user).first().email,
+            "titulo": publication.titulo,  # Cambiado a 'titulo'
+            "descripcion": publication.descripcion,  # Cambiado a 'descripcion'
+            "foto": f"http://localhost:8000{publication.foto}"  # Cambiado a 'foto'
+        }
+        for publication in allpublications
+    ]

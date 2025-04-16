@@ -1,6 +1,6 @@
 from pydantic import BaseModel, EmailStr, validator
 from typing import Optional
-
+from datetime import date,time
 
 class UserCreate(BaseModel):
     nombre: str
@@ -64,3 +64,66 @@ class ResetPasswordRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: str
+
+#DANIELA==========================================================================
+
+class editUsu(BaseModel):
+    nombre: Optional[str] = None
+    email:Optional[str] = None
+    password:Optional[str] = None
+    rol:Optional[str] = None
+    telefono:Optional[str] = None
+
+
+
+class Hisotial_Email(BaseModel):
+    email_client:str
+
+
+class Classmodel(BaseModel):
+    titulo: str
+    descripcion: str
+    profesor: str
+    fecha: str  
+    comienzo: time
+    final: time
+    precio:float
+    habilitado : Optional[bool]=None
+
+    class Config:
+        orm_mode = True
+        
+
+        
+class ReservationClass(BaseModel):
+    titulo_clase: str
+    email_user :str
+    date_class: date
+    status: Optional[str]=None
+    class Config:
+        from_attributes = True 
+    
+        
+class PayClass(BaseModel):
+    reservation_id: int 
+    metodo_pago: str  # tipo 'str' ya que es un Enum ('nequi', 'daviplata', 'presencial')
+    monto: float
+    fecha_pago: date
+
+    class Config:
+        from_attributes = True
+
+
+class mural(BaseModel):
+    id: int
+    id_user: int
+    email: str
+    titulo: str  # Cambiado de 'titulo' a 'title'
+    descripcion: str  # Cambiado de 'descripcion' a 'description'
+    foto: str 
+    class Config:
+        orm_mode = True
+    
+class metodoPay(BaseModel):
+    nombre:str
+    descripcion:str
