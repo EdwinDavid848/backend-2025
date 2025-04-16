@@ -1,3 +1,6 @@
 .qodo
 .credentials.json
 .token.json
+
+credentials/
+*.json  
