@@ -109,5 +109,5 @@ class mural(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 class metodoPay(BaseModel):
-    nombre: str
-    descripcion: str
+    nombre:str
+    descripcion:str

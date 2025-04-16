@@ -19,8 +19,8 @@ from typing import List
 from sqlalchemy import or_
 from urllib.parse import quote
 from sqlalchemy import func
-
 from dotenv import load_dotenv
+
 
 
 
@@ -50,6 +50,7 @@ def get_db():
 
 
 
+
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.profile",
@@ -68,7 +69,6 @@ if not credentials_json:
 
 # Convertir el JSON a un diccionario
 client_secrets = json.loads(credentials_json)
-
 
 # Crear el flujo de OAuth
 # El flow nos permite crear url de autorizacion y cambiar tokens
