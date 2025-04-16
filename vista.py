@@ -51,7 +51,7 @@ def get_db():
 
 
 
-CLIENT_SECRETS_FILE = "credentials.json"
+
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.profile",
@@ -62,8 +62,14 @@ REDIRECT_URI = "http://localhost:8000/auth/callback"
 
 #Iniciar Flujo
 
-with open(CLIENT_SECRETS_FILE, "r") as f:
-    client_secrets = json.load(f)
+# Recuperar el JSON desde la variable de entorno
+credentials_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+if not credentials_json:
+    raise RuntimeError("GOOGLE_CREDENTIALS_JSON no está configurado")
+
+# Convertir el JSON a un diccionario
+client_secrets = json.loads(credentials_json)
 
 # Crear el flujo de OAuth
 # El flow nos permite crear url de autorizacion y cambiar tokens
