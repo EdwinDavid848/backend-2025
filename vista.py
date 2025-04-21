@@ -20,7 +20,8 @@ from sqlalchemy import or_
 from urllib.parse import quote
 from sqlalchemy import func
 from dotenv import load_dotenv
-
+import cloudinary.uploader
+from cloudinary_config import cloudinary
 
 
 
@@ -521,63 +522,57 @@ def obtener_imagenes(nombre: str, db: Session = Depends(get_db)):
 
 
 
-
-
 @app.post("/insertardos")
-async def registrar_cliente(
+async def registrar_producto(
     nombre: str = Form(...),
     descripcion: str = Form(...),
     precio: float = Form(...),
     tipo_unidad: str = Form(...),
     color: str = Form(...),
-    category: str = Form(...), 
+    category: str = Form(...),
     url: UploadFile = File(...),
     db: Session = Depends(get_db)
 ):
     if url.content_type not in ["image/jpeg", "image/png"]:
         raise HTTPException(status_code=400, detail="Formato de archivo no soportado")
 
-    # Verificar si ya existe un producto con el mismo nombre y color
     existing_product = db.query(Product).filter(Product.nombre == nombre, Product.color == color).first()
     if existing_product:
         raise HTTPException(status_code=400, detail="Ya existe un producto con el mismo nombre y color")
 
-    folder_path = "img"
-    file_location = os.path.join(folder_path, url.filename)
-    
-    os.makedirs(folder_path, exist_ok=True)
+    # Subir la imagen a Cloudinary
+    result = cloudinary.uploader.upload(await url.read(), folder="productos")
 
-    with open(file_location, "wb") as buffer:
-        buffer.write(await url.read())
+    imagen_url = result["secure_url"]
 
-    # Crear una URL accesible para la imagen
-    imagen_url = f"/images/{url.filename}"
-
-    # Crear una instancia del modelo con los datos
     producto_data = Product(
         nombre=nombre,
         descripcion=descripcion,
         precio=precio,
         tipo_unidad=tipo_unidad,
         color=color,
-        category=category,  # Este debe coincidir con tu Enum definido
-        imagen_url=imagen_url  # Guardar la URL accesible en lugar de la ruta local
+        category=category,
+        imagen_url=imagen_url
     )
 
-    # Guardar producto_data en la base de datos
     db.add(producto_data)
     db.commit()
     db.refresh(producto_data)
 
-    return {"status": "Producto registrado exitosamente", "data": {
-        "nombre": producto_data.nombre,
-        "descripcion": producto_data.descripcion,
-        "precio": producto_data.precio,
-        "tipo_unidad": producto_data.tipo_unidad,
-        "color": producto_data.color,
-        "category": producto_data.category,
-        "imagen_url": producto_data.imagen_url
-    }}
+    return {
+        "status": "Producto registrado exitosamente",
+        "data": {
+            "nombre": producto_data.nombre,
+            "descripcion": producto_data.descripcion,
+            "precio": producto_data.precio,
+            "tipo_unidad": producto_data.tipo_unidad,
+            "color": producto_data.color,
+            "category": producto_data.category,
+            "imagen_url": imagen_url
+        }
+    }
+
+
 
 @app.put("/productosActualizar/{product_id}")
 async def actualizar_cliente(
